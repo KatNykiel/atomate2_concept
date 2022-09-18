@@ -1,0 +1,1 @@
+# Atomate2 test
