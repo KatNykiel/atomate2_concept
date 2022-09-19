@@ -38,3 +38,22 @@ Either way, This will make it very easy to write mongo queries that
 retrieve the data we need for our various ML analysis projects and
 makes checking outlier predictions very easy. Including checking for
 potential mistakes in data retrieved from literature.
+
+## minimum growing pains
+assembling predefined workflows into an experimental batch is pretty
+easy and can be done by anyone with basic knowledge of python
+scripting.
+
+Creating workflows from scratch does require some python development
+knowledge, however this can task can be made collaborative with good
+git practice and published as a package of predefined workflows for
+non-developer users.
+
+Finally, if someone insists on running experiments the old-fashioned
+way, it is easy to parse the results manually and upload all details
+to the centralized database.
+
+The only missing piece is the necessary database host and disk space
+on Purdue's Geddes Containerized Workloads Cluster.
+
+
