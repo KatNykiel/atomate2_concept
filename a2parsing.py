@@ -3,24 +3,22 @@ VASP run parsing script
 
 implemented using atomate and jobflow
 
-Objectives:
-1. prepare to backfill database with legacy experiments
-   - collect relaxations + subsequent calculations
+Objective: backfill database with legacy experiments
+   - collect all calculations
    - fill atomate schema
      - difference between workflow schema and output schema?
    - upload to database
-2. write atomic steps to files and populate ml directory on depot
 """
 
 from atomate2.vasp.drones import VaspDrone
-from pymatgen.core import Structure
+from pymatgen.core import Structure, Composition
 from jobflow import JobStore, SETTINGS
 
 import os
 import monty
 from pathlib import Path
 
-import tqdm
+from tqdm import tqdm
 from itertools import chain
 
 from typing import Any, Union
@@ -46,12 +44,21 @@ task_document_kwargs = {
 
 drone = VaspDrone(**task_document_kwargs)
 
+#TODO: compute real targets, bandgap and decoE
+#TODO: also get total energy
+#TODO: build training set directory
+#TODO: split necessary functions off to separate script in that directory (using queries)
+#TODO: improve key gen
+#TODO: use existing decoE computations to derive decoE of intermediates
+#TODO: move all environments to depot/apps (quick one)
+#TODO: make metadata function to call on directories for use with update_store
+
 store = SETTINGS.JOB_STORE
 #look into defining save/load mapping to direct document items to
-#additional stores
+#additional stores. currently, items that are too big are
+#automatically redirected to an alternative by maggma/pymongo
 
-experiment_dir = '.' #invoke script from experiment directory
-data_dir = '/depot/amannodi/data/perovskite_structures_training_set'
+exp_dir = '.' #invoke script from experiment directory
 
 def get_vasp_paths(parent:Union[str,Path]) -> Iterable[str]:
     """
@@ -85,8 +92,10 @@ def assimilate_paths(vaspaths:Iterable[Union[str,Path]],
     experiment directories.
     """
     docs = []
-    for vaspath in tqdm(filter_vaspaths(vaspaths, filterlist),
-                        desc=f"Processing {vaspath}"):
+    pbar = tqdm(filter_vaspaths(vaspaths, filterlist),
+                desc="Processing Path()")
+    for vaspath in pbar:
+        pbar.set_description(f'Processing Path("{vaspath}")')
         try:
             with monty.os.cd(vaspath):
                 docs.append(drone.assimilate())
@@ -95,6 +104,9 @@ def assimilate_paths(vaspaths:Iterable[Union[str,Path]],
     return docs
 
 def update_store(store:JobStore, docs:list) -> None:
+    """
+    input store and documents, connect to store, upload documents
+    """
     with store as s:
         s.update(docs, key="output")
 
@@ -102,34 +114,51 @@ def update_store(store:JobStore, docs:list) -> None:
 
 def make_record_name(doc, calc, step)->str:
     """
-    make a string to serve as structure file and id_prop entry ID
+    return string to uniquely identify a structure file and id_prop
+    record from query info.
 
     unique id made of:
-    chemistry + LoT + intermediacy
+    formula + LoT + step
     """
     formula=doc.dict()['formula_pretty']
     LoT=calc.dict()['run_type']
-    istep=step
-    record_name = f"{formula}_{LoT}_{istep}"
+    record_name = f"{formula}_{LoT}_{step}"
     return record_name
 
-def structure_to_training_set_entry(struct:Structure,
-                                    data_dir:Union[str,Path],
-                                    record_name:str,
-                                    props_list:list) -> None:
-    filename=os.path.join(data_dir, record_name)
-    id_prop_master=os.path.join(data_dir, 'id_prop_master.csv')
-    props=','.join(map(str,props_list))
-    struct.to(fmt='POSCAR', filename=filename)
-    with open(id_prop_master, 'a') as f:
-        f.write(f"{record_name},{props}\n")
+def write_properties_file(record:str, props:list,
+                          fdir:Union[str,Path]='.',
+                          csv:str='id_prop.csv') -> None:
+    """
+    write a cgcnn-compliant training target file
+    """
+    csv_path=os.path.join(fdir, csv)
+    props=','.join(map(str,props))
+    with open(prop_file_path, 'a') as f:
+        f.write(f"{record},{props}\n")
 
-def main():
+def structure_to_training_set_entry(struct:Structure,
+                                    record:str,
+                                    props:list,
+                                    fdir:Union[str,Path],
+                                    csv:str='id_prop.csv') -> None:
+    """
+    write a structure to a POSCAR named record in directory fdir
+    
+    write structure properties to properties file in directory fdir
+    """
+    filename=os.path.join(fdir, record)
+    struct.to(fmt='POSCAR', filename=filename)
+    write_properties_file(record, props, fdir, csv)
+
+def main() -> None:
     """silly temporary main function while waiting for Geddes resource"""
-    id_prop_master=os.path.join(data_dir, 'id_prop_master.csv')
-    with open(id_prop_master, 'a') as f:
-        f.write(f"id,decoE,bg\n")
-    docs = assimilate_paths(get_vasp_paths(experiment_dir),
+    data_dir = '/depot/amandine/data/perovskite_structures_training_set'
+    Bel = ['Ca','Sr','Ba','Ge','Sn','Pb']
+
+    write_properties_file(record="id", props=["totE,decoE,bg\n"],
+                          fdir=data_dir, csv="id_prop_master.csv")
+
+    docs = assimilate_paths(get_vasp_paths(exp_dir),
                             filterlist=['LEPSILON','LOPTICS','Phonon_band_structure'])
     # LEPSILON doesn't have bands?  # get_element_spd_dos(el)[band] keyerror
     # LOPTICS doesn't have VASPrun pdos attribute
@@ -154,42 +183,56 @@ def main():
             # calc.dict()['input'].keys()
             # ['incar', 'kpoints', 'nkpoints', 'potcar', 'potcar_spec', 'potcar_type', 'parameters', 'lattice_rec',
             # 'structure', 'is_hubbard', 'hubbards']
-            struct = calc.dict()['input']['structure'] #POSCAR
-            props_list = [None, None] #no computed properties yet
-            record_name = make_record_name(doc, calc, 0)
-            structure_to_training_set_entry(struct,
-                                            data_dir,
+            POSCAR = calc.dict()['input']['structure']
+            formula = Composition(POSCAR.formula)
+
+            formula_unit, unit_factor = formula.get_reduced_formula_and_factor()
+            print(formula_unit, unit_factor)
+
+            count_cells = sum([Bnum for B,Bnum in formula.as_dict().items() if B in Bel])
+            toten_pfu = calc.dict()['output']['energy']/count_cells 
+            # decoE = decomp_energy(formula_dict, toten_pfu) #from cmcl
+            decoE = -1
+            bg = calc.dict()['output']['bandgap']]
+            # predictions on POSCARs should predict CONTCAR energies
+            record_name = make_record_name(doc, calc, "POSCAR")
+            structure_to_training_set_entry(POSCAR,
                                             record_name,
-                                            props_list)
+                                            props=[toten_pfu, decoE, bg],
+                                            data_dir,
+                                            csv='id_prop_master.csv')
+            
             for count, step in enumerate(calc.dict()['output']['ionic_steps']):
                 # print(step.keys())
                 # ['e_fr_energy', 'e_wo_entrp', 'e_0_energy', 'forces', 'stress', 'electronic_steps', 'structure']
                 struct = step['structure'] #XDATCAR iteration
-                # compute stability and band gap at each interval
-                # decoE = step['e_fr_energy'] - energy of stuff
+                # compute decomposition energy at each interval
+                formula_dict = Composition(struct.formula).as_dict()
+                count_cells = sum([Bnum for B,Bnum in formula_dict.items() if B in Bel])
+                toten_pfu = step['e_fr_energy']/count_cells
+                # decoE = decomp_energy(formula_dict, toten_pfu) #from cmcl
                 decoE = -1
-                HOMO = 1 # look for ionic step eigenvalues in outcar? 
-                LUMO = 0
-                bg = HOMO-LUMO
-                props_list = [decoE, bg]
+                bg = "" # bg cannot be saved from intermediates in
+                        # vasp runs not configured to return them at
+                        # each step
+
+                # compare structure steps to POSCARs before saving?
+                # match_kwargs = dict(ltol=0.2,stol=0.3, angle_tol=5,
+                #                     primitive_cell=True, scale=True,
+                #                     attempt_supercell=False,
+                #                     allow_subset=False,
+                #                     supercell_size=True)
+                # if struct.matches(POSCAR, **match_kwargs):
+
                 record_name = make_record_name(doc, calc, count+1)
                 structure_to_training_set_entry(struct,
-                                                data_dir,
                                                 record_name,
-                                                props_list)
-
-            struct = calc.dict()['output']['structure']
-            decoE = calc.dict()['output']['energy'] # minus other stuff
-            props_list = [decoE,
-                          calc.dict()['output']['bandgap']]
-            record_name = make_record_name(doc, calc, count+2)
-            structure_to_training_set_entry(struct,
-                                            data_dir,
-                                            record_name,
-                                            props_list)
+                                                props=[toten_pfu, decoE, bg],
+                                                data_dir,
+                                                csv='id_prop_master.csv')
 
 if __name__ == "__main__":
     main()
-    # docs = assimilate_paths(get_vasp_paths(experiment_dir),
+    # docs = assimilate_paths(get_vasp_paths(exp_dir),
     #                         filterlist=['LEPSILON','LOPTICS','Phonon_band_structure'])
     # update_store(store, docs)
