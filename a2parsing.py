@@ -133,7 +133,7 @@ def write_properties_file(record:str, props:list,
     """
     csv_path=os.path.join(fdir, csv)
     props=','.join(map(str,props))
-    with open(prop_file_path, 'a') as f:
+    with open(csv_path, 'a') as f:
         f.write(f"{record},{props}\n")
 
 def structure_to_training_set_entry(struct:Structure,
@@ -152,10 +152,10 @@ def structure_to_training_set_entry(struct:Structure,
 
 def main() -> None:
     """silly temporary main function while waiting for Geddes resource"""
-    data_dir = '/depot/amandine/data/perovskite_structures_training_set'
+    data_dir = '/depot/amannodi/data/perovskite_structures_training_set'
     Bel = ['Ca','Sr','Ba','Ge','Sn','Pb']
 
-    write_properties_file(record="id", props=["totE,decoE,bg\n"],
+    write_properties_file(record="id", props=["totE,decoE,bg"],
                           fdir=data_dir, csv="id_prop_master.csv")
 
     docs = assimilate_paths(get_vasp_paths(exp_dir),
@@ -183,23 +183,26 @@ def main() -> None:
             # calc.dict()['input'].keys()
             # ['incar', 'kpoints', 'nkpoints', 'potcar', 'potcar_spec', 'potcar_type', 'parameters', 'lattice_rec',
             # 'structure', 'is_hubbard', 'hubbards']
-            POSCAR = calc.dict()['input']['structure']
-            formula = Composition(POSCAR.formula)
+            struct = calc.dict()['input']['structure'] #POSCAR
+            prime_struct = struct.get_primitive_structure(tolerance=0.25)
+            formula = Composition(struct.formula)
+            prime_formula = Composition(prime_struct.formula)
+            
+            formula_unit, formula_units_per_super_cell = formula.get_reduced_formula_and_factor()
+            _, formula_units_per_unit_cell = prime_formula.get_reduced_formula_and_factor()
+            cell_count = formula_units_per_super_cell/formula_units_per_unit_cell
 
-            formula_unit, unit_factor = formula.get_reduced_formula_and_factor()
-            print(formula_unit, unit_factor)
-
-            count_cells = sum([Bnum for B,Bnum in formula.as_dict().items() if B in Bel])
-            toten_pfu = calc.dict()['output']['energy']/count_cells 
+            #cell_count = sum([Bnum for B,Bnum in formula.as_dict().items() if B in Bel])
+            toten_pfu = calc.dict()['output']['energy']/cell_count
             # decoE = decomp_energy(formula_dict, toten_pfu) #from cmcl
             decoE = -1
-            bg = calc.dict()['output']['bandgap']]
+            bg = calc.dict()['output']['bandgap']
             # predictions on POSCARs should predict CONTCAR energies
             record_name = make_record_name(doc, calc, "POSCAR")
-            structure_to_training_set_entry(POSCAR,
+            structure_to_training_set_entry(struct,
                                             record_name,
                                             props=[toten_pfu, decoE, bg],
-                                            data_dir,
+                                            fdir=data_dir,
                                             csv='id_prop_master.csv')
             
             for count, step in enumerate(calc.dict()['output']['ionic_steps']):
@@ -228,7 +231,7 @@ def main() -> None:
                 structure_to_training_set_entry(struct,
                                                 record_name,
                                                 props=[toten_pfu, decoE, bg],
-                                                data_dir,
+                                                fdir=data_dir,
                                                 csv='id_prop_master.csv')
 
 if __name__ == "__main__":
