@@ -152,7 +152,8 @@ def structure_to_training_set_entry(struct:Structure,
 
 def main() -> None:
     """silly temporary main function while waiting for Geddes resource"""
-    data_dir = '/depot/amannodi/data/perovskite_structures_training_set'
+    #data_dir = '/depot/amannodi/data/perovskite_structures_training_set'
+    data_dir = '/home/panos/MannodiGroup/DFT/parse_test'
     Bel = ['Ca','Sr','Ba','Ge','Sn','Pb']
 
     write_properties_file(record="id", props=["totE,decoE,bg"],
@@ -201,7 +202,7 @@ def main() -> None:
             record_name = make_record_name(doc, calc, "POSCAR")
             structure_to_training_set_entry(struct,
                                             record_name,
-                                            props=[toten_pfu, decoE, bg],
+                                            props=[float(toten_pfu), decoE, bg],
                                             fdir=data_dir,
                                             csv='id_prop_master.csv')
             
